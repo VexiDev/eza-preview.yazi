@@ -62,7 +62,7 @@ local function get_ignore_patterns(directory, show_hidden)
         end
     end
 
-    -- Read local and global .ezaignore files
+    -- Read local and global .ezaignore files (if exists)
     read_ignore_file(directory .. "/.ezaignore")
     read_ignore_file(os.getenv("HOME") .. "/.config/yazi/.ezaignore")
 
@@ -73,12 +73,12 @@ local function get_ignore_patterns(directory, show_hidden)
     return patterns
 end
 
--- Initialize the plugin by toggling the view mode
+-- Initialize the plugin
 function M:setup()
     toggle_view_mode()
 end
 
--- Entry point for the plugin; toggles view mode and resets scroll
+-- Entry point for the plugin
 function M:entry(_)
     toggle_view_mode()
     ya.manager_emit("seek", {0})
@@ -107,7 +107,7 @@ function M:peek()
 
     local show_hidden = get_show_hidden()
 
-    -- Always apply ignore patterns
+    -- Apply ignore patterns
     local patterns = get_ignore_patterns(tostring(self.file.url), show_hidden)
     if #patterns > 0 then
         table.insert(args, '-I="' .. table.concat(patterns, "|") .. '"')
@@ -117,18 +117,8 @@ function M:peek()
 
     local eza_command = "eza " .. table.concat(args, " ")
 
-    -- Debugging: display the eza command being used
-    -- ya.notify {
-    --     title = "Eza Command",
-    --     content = eza_command,
-    --     timeout = 0.5,
-    --     level = "info"
-    -- }
-
-    -- Copy the command to the clipboard for debugging
-    -- os.execute("echo '" .. eza_command .. "' | pbcopy")
-
-    -- Execute the eza command using a shell
+    -- Execute the eza command using a shell 
+    -- 	• I will figure out why simply using Command() fails some other day
     local child = Command("/bin/sh"):args({"-c", eza_command}):stdout(Command.PIPED):stderr(Command.PIPED):spawn()
 
     local limit = self.area.h
