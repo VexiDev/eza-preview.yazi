@@ -1,100 +1,90 @@
-
 local M = {}
-local ignore_enabled = true 
 
-local function fail(s, ...)
-    ya.notify { title = "Eza Preview", content = string.format(s, ...), timeout = 2, level = "error" }
+-- Helper function to display error notifications
+local function fail(message)
+    ya.notify {
+        title = "Eza Preview",
+        content = tostring(message),
+        timeout = 2,
+        level = "error"
+    }
 end
 
-local is_tree_view_mode = ya.sync(function(state, _)
-    return state.tree
-end)
-
-local toggle_view_mode = ya.sync(function(state, _)
-    if state.tree == nil then
-        state.tree = false
-    end
+-- Toggle and check functions for view mode
+local toggle_view_mode = ya.sync(function(state)
     state.tree = not state.tree
 end)
 
+local is_tree_view_mode = ya.sync(function(state)
+    return state.tree or false
+end)
 
+-- Function to get the 'show_hidden' value from the context
+local get_show_hidden = ya.sync(function()
+    return cx.active.conf.show_hidden
+end)
 
--- Exposes the ignore filter toggle for mapping in ~/.config/yazi/keymap.toml
-function M.toggle_ignore_filter()
-    toggle_ignore_filter()
-end
-
-local function toggle_ignore_filter()
-    ignore_enabled = not ignore_enabled
-    ya.manager_emit("reload", { only_if = tostring(cx.active.current.file.url) })  -- Refresh Yazi window
-    ya.notify { title = "Eza Ignore", content = "Ignore filter " .. (ignore_enabled and "enabled" or "disabled"), timeout = 1, level = "info" }
-end
-
-local function get_ignore_patterns(directory)
-    local ignore_file = directory .. "/.ezaignore"
+-- Function to parse and collect ignore patterns
+local function get_ignore_patterns(directory, show_hidden)
     local patterns = {}
+    local hidden_pattern_added = false
 
-    local function parse_gitignore_line(line)
-        -- Remove leading and trailing whitespace
-        line = line:match("^%s*(.-)%s*$")
-        
-        -- Skip empty lines and comments
-        if line == "" or line:match("^#") then
+    local function parse_ignore_line(line)
+        line = line:match("^%s*(.-)%s*$") -- Trim whitespace
+        if line == "" or line:match("^#") or line:sub(1, 1) == '!' then
             return nil
         end
 
-        if line:sub(1, 1) == '!' then
-            -- Negated patterns are not supported
-            return nil
-        end
-
-        -- Remove leading '/'
+        local is_directory = line:sub(-1) == "/"
         if line:sub(1, 1) == '/' then
             line = line:sub(2)
         end
-
-        return line
+        if is_directory then
+            return line .. "/**"
+        else
+            return line
+        end
     end
 
     local function read_ignore_file(file_path)
         local file = io.open(file_path, "r")
         if file then
             for line in file:lines() do
-                local pattern = parse_gitignore_line(line)
+                local pattern = parse_ignore_line(line)
                 if pattern then
+                    if pattern == ".*" then
+                        hidden_pattern_added = true
+                    end
                     table.insert(patterns, pattern)
                 end
             end
             file:close()
-            return true
-        else
-            return false
         end
     end
 
-    -- Try to read the local .ezaignore file
-    local read_success = read_ignore_file(ignore_file)
-    if not read_success then
-        -- If no local .ezaignore, check for a global one
-        local home = os.getenv("HOME")
-        local global_ignore_file = home .. "/.config/yazi/.ezaignore"
-        read_success = read_ignore_file(global_ignore_file)
+    -- Read local and global .ezaignore files
+    read_ignore_file(directory .. "/.ezaignore")
+    read_ignore_file(os.getenv("HOME") .. "/.config/yazi/.ezaignore")
+
+    if not show_hidden and not hidden_pattern_added then
+        table.insert(patterns, ".*")
     end
 
     return patterns
 end
 
-
-
+-- Initialize the plugin by toggling the view mode
 function M:setup()
     toggle_view_mode()
 end
 
+-- Entry point for the plugin; toggles view mode and resets scroll
 function M:entry(_)
     toggle_view_mode()
-    ya.manager_emit("seek", { 0 })
+    ya.manager_emit("seek", {0})
 end
 
+-- Handles scrolling within the preview
 function M:seek(units)
     local h = cx.active.current.hovered
     if h and h.url == self.file.url then
@@ -107,67 +97,50 @@ function M:seek(units)
     end
 end
 
+-- Main function to generate and display the preview
 function M:peek()
-    local args = {
-        "-a",
-        "--oneline",
-        "--color=always",
-        "--icons=always",
-        "--group-directories-first",
-        "--no-quotes",
-    }
-    
+    local args = {"-a", "--oneline", "--color=always", "--icons=always", "--group-directories-first", "--no-quotes"}
+
     if is_tree_view_mode() then
         table.insert(args, "-T")
     end
-    
-    -- Apply ignore patterns if ignore is enabled
-    if ignore_enabled then
-        -- get ignore patterns from .ezaignore file
-        local patterns = get_ignore_patterns(tostring(self.file.url))
 
-        -- If there are patterns, add them to the eza command
-        if #patterns > 0 then
-            local pattern_list = table.concat(patterns, "|")
-            table.insert(args, "-I=\"" .. pattern_list .. "\"")
-        end
+    local show_hidden = get_show_hidden()
+
+    -- Always apply ignore patterns
+    local patterns = get_ignore_patterns(tostring(self.file.url), show_hidden)
+    if #patterns > 0 then
+        table.insert(args, '-I="' .. table.concat(patterns, "|") .. '"')
     end
 
-    -- For debugging: prints the eza command being used
-    -- ya.notify { title = "Eza Command",
-    --     content = "eza " .. table.concat(args, " "),
+    table.insert(args, tostring(self.file.url))
+
+    local eza_command = "eza " .. table.concat(args, " ")
+
+    -- Debugging: display the eza command being used
+    -- ya.notify {
+    --     title = "Eza Command",
+    --     content = eza_command,
     --     timeout = 0.5,
     --     level = "info"
     -- }
-    
-    table.insert(args, tostring(self.file.url))
 
-    -- Build the final eza command string for clipboard
-    local eza_command = "eza " .. table.concat(args, " ")
+    -- Copy the command to the clipboard for debugging
+    -- os.execute("echo '" .. eza_command .. "' | pbcopy")
 
-    -- Copy the command to clipboard (macOS version using pbcopy)
-    os.execute("echo '" .. eza_command .. "' | pbcopy")
-
-    -- Replace '/bin/sh' with the path to your shell of choice
-    -- Execute the eza command using a shell since Command() API does not correctly parse the `-I` argument in eza
-    -- This is a workaround I'm sure there is probably a way to do this with the Command API
-    local child = Command("/bin/sh")
-        :args({ "-c", eza_command }) 
-        :stdout(Command.PIPED)
-        :stderr(Command.PIPED)
-        :spawn()
-        
+    -- Execute the eza command using a shell
+    local child = Command("/bin/sh"):args({"-c", eza_command}):stdout(Command.PIPED):stderr(Command.PIPED):spawn()
 
     local limit = self.area.h
     local lines = ""
-    local num_lines = 1
+    local num_lines = 0
     local num_skip = 0
     local empty_output = false
 
     repeat
         local line, event = child:read_line()
         if event == 1 then
-            fail(tostring(event))
+            fail(event)
         elseif event ~= 0 then
             break
         end
@@ -180,38 +153,28 @@ function M:peek()
         end
     until num_lines >= limit
 
-    if num_lines == 1 and not is_tree_view_mode() then
+    if num_lines == 0 and not is_tree_view_mode() then
         empty_output = true
-    elseif num_lines == 2 and is_tree_view_mode() then
+    elseif num_lines == 1 and is_tree_view_mode() then
         empty_output = true
     end
 
     child:start_kill()
 
-    -- For debugging: prints the output of the eza command
-    -- ya.notify {
-    --     title = "Eza Output",
-    --     content = lines,
-    --     timeout = 1,    
-    --     level = "info"  
-    -- }
-    
-    -- Ensure Yazi properly updates the view
+    -- Update the view based on the output
     if self.skip > 0 and num_lines < limit then
-        ya.manager_emit(
-            "peek",
-            { tostring(math.max(0, self.skip - (limit - num_lines))), only_if = tostring(self.file.url), upper_bound = "" }
-        )
-    elseif empty_output then
-        ya.preview_widgets(self, {
-            ui.Paragraph(self.area, { ui.Line("No items") })
-                :align(ui.Paragraph.CENTER),
+        ya.manager_emit("peek", {
+            tostring(math.max(0, self.skip - (limit - num_lines))),
+            only_if = tostring(self.file.url),
+            upper_bound = ""
         })
+    elseif empty_output then
+        ya.preview_widgets(self, {ui.Paragraph(self.area, {ui.Line("No items")}):align(ui.Paragraph.CENTER)})
     else
-        -- Force UI widget redraw with the new output
-        ya.preview_widgets(self, { ui.Paragraph.parse(self.area, lines) })
-        -- Ensure proper refresh by reloading widget data
-        ya.manager_emit("reload", { only_if = tostring(self.file.url) })
+        ya.preview_widgets(self, {ui.Paragraph.parse(self.area, lines)})
+        ya.manager_emit("reload", {
+            only_if = tostring(self.file.url)
+        })
     end
 end
 
